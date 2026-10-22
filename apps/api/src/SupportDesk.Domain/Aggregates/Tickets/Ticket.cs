@@ -1,3 +1,4 @@
+using SupportDesk.Domain.Aggregates.Customers;
 using SupportDesk.Domain.Common;
 using SupportDesk.Domain.Exceptions;
 
@@ -13,6 +14,8 @@ namespace SupportDesk.Domain.Aggregates.Tickets;
 /// </remarks>
 public sealed class Ticket : AggregateRoot
 {
+    private readonly List<TicketEscalation> _escalations = [];
+
     private Ticket()
     {
         // For EF Core.
@@ -45,12 +48,17 @@ public sealed class Ticket : AggregateRoot
 
     public DateTime? ResolvedAtUtc { get; private set; }
 
+    /// <summary>Immutable history of escalations performed on this ticket.</summary>
+    public IReadOnlyCollection<TicketEscalation> Escalations => _escalations;
+
     /// <summary>True while the ticket still needs work from an agent.</summary>
     public bool IsOpen => Status is not (TicketStatus.Resolved or TicketStatus.Closed);
 
+    /// <summary>True when the ticket is open and below <see cref="TicketPriority.Critical"/>.</summary>
+    public bool CanEscalate => IsOpen && Priority < TicketPriority.Critical;
+
     /// <summary>
-    /// Raises a new ticket for a customer. It starts as <see cref="TicketStatus.New"/>, with no
-    /// owner and no due date.
+    /// Raises a new ticket for a customer.
     /// </summary>
     public static Ticket Raise(
         string reference,
@@ -59,7 +67,9 @@ public sealed class Ticket : AggregateRoot
         int customerId,
         int categoryId,
         TicketPriority priority,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        DateTime? dueAtUtc = null,
+        int? assignedAgentId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
         ArgumentException.ThrowIfNullOrWhiteSpace(title);
@@ -72,11 +82,81 @@ public sealed class Ticket : AggregateRoot
             Description = description.Trim(),
             CustomerId = customerId,
             CategoryId = categoryId,
+            AssignedAgentId = assignedAgentId,
             Priority = priority,
             Status = TicketStatus.New,
             CreatedAtUtc = nowUtc,
-            UpdatedAtUtc = nowUtc
+            UpdatedAtUtc = nowUtc,
+            DueAtUtc = dueAtUtc
         };
+    }
+
+    /// <summary>
+    /// Escalates the ticket one priority level, recomputes its due date from <paramref name="nowUtc"/>,
+    /// updates its assigned agent, and records an immutable <see cref="TicketEscalation"/> history entry.
+    /// </summary>
+    /// <exception cref="BusinessRuleViolationException">
+    /// The ticket is already Resolved/Closed or already at Critical priority.
+    /// </exception>
+    public TicketEscalation Escalate(
+        SlaPolicy slaPolicy,
+        CustomerTier customerTier,
+        int? toAgentId,
+        string reason,
+        string escalatedBy,
+        DateTime nowUtc)
+    {
+        ArgumentNullException.ThrowIfNull(slaPolicy);
+
+        if (!IsOpen)
+        {
+            throw new BusinessRuleViolationException(
+                $"Ticket {Reference} is {Status} and cannot be escalated because resolved or closed tickets cannot be escalated.");
+        }
+
+        if (Priority == TicketPriority.Critical)
+        {
+            throw new BusinessRuleViolationException(
+                $"Ticket {Reference} is already at Critical priority and cannot be escalated further.");
+        }
+
+        var trimmedReason = reason?.Trim() ?? string.Empty;
+        if (trimmedReason.Length is < 5 or > 500)
+        {
+            throw new ArgumentException("Escalation reason must be between 5 and 500 characters.", nameof(reason));
+        }
+
+        var trimmedActor = escalatedBy?.Trim() ?? string.Empty;
+        if (trimmedActor.Length is < 1 or > 100)
+        {
+            throw new ArgumentException("EscalatedBy must be between 1 and 100 characters.", nameof(escalatedBy));
+        }
+
+        var fromPriority = Priority;
+        var toPriority = Priority + 1;
+        var fromAgentId = AssignedAgentId;
+        var fromDueAtUtc = DueAtUtc;
+        var toDueAtUtc = slaPolicy.CalculateDueAtUtc(nowUtc, toPriority, customerTier);
+
+        Priority = toPriority;
+        AssignedAgentId = toAgentId;
+        DueAtUtc = toDueAtUtc;
+        UpdatedAtUtc = nowUtc;
+
+        var escalation = new TicketEscalation(
+            Id,
+            fromPriority,
+            toPriority,
+            fromAgentId,
+            toAgentId,
+            fromDueAtUtc,
+            toDueAtUtc,
+            trimmedReason,
+            trimmedActor,
+            nowUtc);
+
+        _escalations.Add(escalation);
+        return escalation;
     }
 
     /// <summary>

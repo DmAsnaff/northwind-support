@@ -14,8 +14,10 @@ namespace SupportDesk.Infrastructure.Queries;
 /// Ticket reads. Projected in the database and never tracked. Aggregates hold only each
 /// other's ids, so the customer, category and agent labels are joined in here, on the read side.
 /// </summary>
-public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQueries
+public sealed class TicketQueries(SupportDbContext db, IClock clock, SlaPolicy? slaPolicy = null) : ITicketQueries
 {
+    private readonly SlaPolicy _slaPolicy = slaPolicy ?? new SlaPolicy(new SlaSettings());
+
     /// <remarks>
     /// Filters, sorts and pages the ticket list. Every supplied filter is applied in the
     /// database before counting and paging, so <c>totalCount</c> and <c>totalPages</c>
@@ -23,13 +25,13 @@ public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQu
     /// </remarks>
     public async Task<PagedResult<TicketListItemDto>> GetPagedAsync(TicketQuery query, CancellationToken ct)
     {
-        var tickets = ApplyFilters(TicketsWithLabels(), query);
+        var now = clock.UtcNow;
+
+        var tickets = ApplyFilters(TicketsWithLabels(), query, now);
 
         var totalCount = await tickets.CountAsync(ct);
 
-        var now = clock.UtcNow;
-
-        var items = await ApplySort(tickets, query)
+        var rawItems = await ApplySort(tickets, query)
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
             .Select(x => new TicketListItemDto
@@ -45,19 +47,28 @@ public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQu
                 CreatedAtUtc = x.Ticket.CreatedAtUtc,
                 UpdatedAtUtc = x.Ticket.UpdatedAtUtc,
                 DueAtUtc = x.Ticket.DueAtUtc,
-                ResolvedAtUtc = x.Ticket.ResolvedAtUtc,
-                SlaStatus = SlaEvaluator.Evaluate(x.Ticket.DueAtUtc, x.Ticket.ResolvedAtUtc, now)
+                ResolvedAtUtc = x.Ticket.ResolvedAtUtc
             })
             .ToListAsync(ct);
 
-        return new PagedResult<TicketListItemDto>(items, query.Page, query.PageSize, totalCount);
+        foreach (var item in rawItems)
+        {
+            item.SlaStatus = SlaEvaluator.Evaluate(
+                item.DueAtUtc,
+                item.ResolvedAtUtc,
+                now,
+                _slaPolicy.GetWindow(item.Priority, item.Customer.Tier),
+                _slaPolicy.AtRiskThresholdPercent);
+        }
+
+        return new PagedResult<TicketListItemDto>(rawItems, query.Page, query.PageSize, totalCount);
     }
 
-    public Task<TicketDetailDto?> GetDetailAsync(int id, CancellationToken ct)
+    public async Task<TicketDetailDto?> GetDetailAsync(int id, CancellationToken ct)
     {
         var now = clock.UtcNow;
 
-        return TicketsWithLabels()
+        var detail = await TicketsWithLabels()
             .Where(x => x.Ticket.Id == id)
             .Select(x => new TicketDetailDto
             {
@@ -74,17 +85,28 @@ public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQu
                 CreatedAtUtc = x.Ticket.CreatedAtUtc,
                 UpdatedAtUtc = x.Ticket.UpdatedAtUtc,
                 DueAtUtc = x.Ticket.DueAtUtc,
-                ResolvedAtUtc = x.Ticket.ResolvedAtUtc,
-                SlaStatus = SlaEvaluator.Evaluate(x.Ticket.DueAtUtc, x.Ticket.ResolvedAtUtc, now)
+                ResolvedAtUtc = x.Ticket.ResolvedAtUtc
             })
             .FirstOrDefaultAsync(ct);
+
+        if (detail is not null)
+        {
+            detail.SlaStatus = SlaEvaluator.Evaluate(
+                detail.DueAtUtc,
+                detail.ResolvedAtUtc,
+                now,
+                _slaPolicy.GetWindow(detail.Priority, detail.Customer.Tier),
+                _slaPolicy.AtRiskThresholdPercent);
+        }
+
+        return detail;
     }
 
     public async Task<IReadOnlyList<TicketListItemDto>> GetForCustomerAsync(int customerId, CancellationToken ct)
     {
         var now = clock.UtcNow;
 
-        return await TicketsWithLabels()
+        var items = await TicketsWithLabels()
             .Where(x => x.Ticket.CustomerId == customerId)
             .OrderByDescending(x => x.Ticket.CreatedAtUtc)
             .ThenByDescending(x => x.Ticket.Id)
@@ -101,10 +123,60 @@ public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQu
                 CreatedAtUtc = x.Ticket.CreatedAtUtc,
                 UpdatedAtUtc = x.Ticket.UpdatedAtUtc,
                 DueAtUtc = x.Ticket.DueAtUtc,
-                ResolvedAtUtc = x.Ticket.ResolvedAtUtc,
-                SlaStatus = SlaEvaluator.Evaluate(x.Ticket.DueAtUtc, x.Ticket.ResolvedAtUtc, now)
+                ResolvedAtUtc = x.Ticket.ResolvedAtUtc
             })
             .ToListAsync(ct);
+
+        foreach (var item in items)
+        {
+            item.SlaStatus = SlaEvaluator.Evaluate(
+                item.DueAtUtc,
+                item.ResolvedAtUtc,
+                now,
+                _slaPolicy.GetWindow(item.Priority, item.Customer.Tier),
+                _slaPolicy.AtRiskThresholdPercent);
+        }
+
+        return items;
+    }
+
+    public async Task<IReadOnlyList<TicketEscalationDto>?> GetEscalationsAsync(int ticketId, CancellationToken ct)
+    {
+        var exists = await db.Set<Ticket>()
+            .AsNoTracking()
+            .AnyAsync(t => t.Id == ticketId, ct);
+
+        if (!exists)
+        {
+            return null;
+        }
+
+        var query =
+            from escalation in db.Set<TicketEscalation>().AsNoTracking()
+            where escalation.TicketId == ticketId
+            from fromAgent in db.Set<Agent>().AsNoTracking()
+                .Where(a => a.Id == escalation.FromAgentId)
+                .DefaultIfEmpty()
+            from toAgent in db.Set<Agent>().AsNoTracking()
+                .Where(a => a.Id == escalation.ToAgentId)
+                .DefaultIfEmpty()
+            orderby escalation.EscalatedAtUtc descending, escalation.Id descending
+            select new TicketEscalationDto
+            {
+                Id = escalation.Id,
+                TicketId = escalation.TicketId,
+                FromPriority = escalation.FromPriority,
+                ToPriority = escalation.ToPriority,
+                FromAgent = fromAgent == null ? null : new AgentSummaryDto(fromAgent.Id, fromAgent.FullName),
+                ToAgent = toAgent == null ? null : new AgentSummaryDto(toAgent.Id, toAgent.FullName),
+                FromDueAtUtc = escalation.FromDueAtUtc,
+                ToDueAtUtc = escalation.ToDueAtUtc,
+                Reason = escalation.Reason,
+                EscalatedBy = escalation.EscalatedBy,
+                EscalatedAtUtc = escalation.EscalatedAtUtc
+            };
+
+        return await query.ToListAsync(ct);
     }
 
     /// <summary>
@@ -121,7 +193,10 @@ public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQu
     /// Applies every supplied filter to the query. All conditions combine with AND.
     /// Runs entirely in SQL - no in-memory filtering.
     /// </summary>
-    private static IQueryable<TicketWithLabels> ApplyFilters(IQueryable<TicketWithLabels> source, TicketQuery query)
+    private IQueryable<TicketWithLabels> ApplyFilters(
+        IQueryable<TicketWithLabels> source,
+        TicketQuery query,
+        DateTime nowUtc)
     {
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
@@ -161,7 +236,65 @@ public sealed class TicketQueries(SupportDbContext db, IClock clock) : ITicketQu
             source = source.Where(x => x.Ticket.AssignedAgentId == query.AssignedAgentId.Value);
         }
 
+        if (query.SlaStatus.HasValue)
+        {
+            source = ApplySlaFilter(source, query.SlaStatus.Value, nowUtc);
+        }
+
         return source;
+    }
+
+    private IQueryable<TicketWithLabels> ApplySlaFilter(
+        IQueryable<TicketWithLabels> source,
+        SlaStatus slaStatus,
+        DateTime nowUtc)
+    {
+        var stdLowCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.Low, CustomerTier.Standard));
+        var stdMedCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.Medium, CustomerTier.Standard));
+        var stdHighCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.High, CustomerTier.Standard));
+        var stdCritCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.Critical, CustomerTier.Standard));
+
+        var premLowCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.Low, CustomerTier.Premium));
+        var premMedCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.Medium, CustomerTier.Premium));
+        var premHighCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.High, CustomerTier.Premium));
+        var premCritCutoff = nowUtc.Add(_slaPolicy.GetAtRiskThreshold(TicketPriority.Critical, CustomerTier.Premium));
+
+        return slaStatus switch
+        {
+            SlaStatus.NotApplicable => source.Where(x => x.Ticket.DueAtUtc == null),
+            SlaStatus.Met => source.Where(x =>
+                x.Ticket.DueAtUtc != null
+                && x.Ticket.ResolvedAtUtc != null
+                && x.Ticket.ResolvedAtUtc <= x.Ticket.DueAtUtc),
+            SlaStatus.Breached => source.Where(x =>
+                x.Ticket.DueAtUtc != null
+                && ((x.Ticket.ResolvedAtUtc != null && x.Ticket.ResolvedAtUtc > x.Ticket.DueAtUtc)
+                    || (x.Ticket.ResolvedAtUtc == null && nowUtc > x.Ticket.DueAtUtc))),
+            SlaStatus.AtRisk => source.Where(x =>
+                x.Ticket.DueAtUtc != null
+                && x.Ticket.ResolvedAtUtc == null
+                && x.Ticket.DueAtUtc >= nowUtc
+                && ((x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.Low && x.Ticket.DueAtUtc <= stdLowCutoff)
+                    || (x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.Medium && x.Ticket.DueAtUtc <= stdMedCutoff)
+                    || (x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.High && x.Ticket.DueAtUtc <= stdHighCutoff)
+                    || (x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.Critical && x.Ticket.DueAtUtc <= stdCritCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.Low && x.Ticket.DueAtUtc <= premLowCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.Medium && x.Ticket.DueAtUtc <= premMedCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.High && x.Ticket.DueAtUtc <= premHighCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.Critical && x.Ticket.DueAtUtc <= premCritCutoff))),
+            SlaStatus.WithinSla => source.Where(x =>
+                x.Ticket.DueAtUtc != null
+                && x.Ticket.ResolvedAtUtc == null
+                && ((x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.Low && x.Ticket.DueAtUtc > stdLowCutoff)
+                    || (x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.Medium && x.Ticket.DueAtUtc > stdMedCutoff)
+                    || (x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.High && x.Ticket.DueAtUtc > stdHighCutoff)
+                    || (x.Customer.Tier == CustomerTier.Standard && x.Ticket.Priority == TicketPriority.Critical && x.Ticket.DueAtUtc > stdCritCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.Low && x.Ticket.DueAtUtc > premLowCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.Medium && x.Ticket.DueAtUtc > premMedCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.High && x.Ticket.DueAtUtc > premHighCutoff)
+                    || (x.Customer.Tier == CustomerTier.Premium && x.Ticket.Priority == TicketPriority.Critical && x.Ticket.DueAtUtc > premCritCutoff))),
+            _ => source
+        };
     }
 
     private static IQueryable<TicketWithLabels> ApplySort(IQueryable<TicketWithLabels> source, TicketQuery query)

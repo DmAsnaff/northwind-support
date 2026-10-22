@@ -5,6 +5,8 @@ import { Spinner } from '../../components/Spinner';
 import { useReferenceData } from '../../hooks/useReferenceData';
 import type { TicketDetail } from '../../types/api';
 import { CreateTicketForm } from './components/CreateTicketForm';
+import { SlaCell } from './components/SlaCell';
+import { PriorityBadge } from './components/TicketBadges';
 
 export function CreateTicketPage() {
   const reference = useReferenceData();
@@ -30,9 +32,42 @@ export function CreateTicketPage() {
 
       {created && (
         <div className="card notice" role="status">
-          <p>
-            Raised <strong>{created.reference}</strong> for {created.customer.name}.
-          </p>
+          <h2>
+            Raised <strong>{created.reference}</strong> for {created.customer.name}
+          </h2>
+
+          <dl className="summary">
+            <div>
+              <dt>Applied priority</dt>
+              <dd>
+                <PriorityBadge priority={created.priority} />
+                {created.triage?.priorityReason && (
+                  <span className="summary__note">{created.triage.priorityReason}</span>
+                )}
+              </dd>
+            </div>
+
+            <div>
+              <dt>Due date &amp; SLA</dt>
+              <dd>
+                <SlaCell dueAtUtc={created.dueAtUtc} slaStatus={created.slaStatus} />
+                {created.triage?.slaReason && (
+                  <span className="summary__note">{created.triage.slaReason}</span>
+                )}
+              </dd>
+            </div>
+
+            <div>
+              <dt>Assigned agent</dt>
+              <dd>
+                <strong>{created.assignedAgent?.fullName ?? 'Unassigned'}</strong>
+                {created.triage?.assignmentReason && (
+                  <span className="summary__note">{created.triage.assignmentReason}</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+
           <div className="button-row">
             <button
               type="button"
@@ -41,7 +76,11 @@ export function CreateTicketPage() {
             >
               Open {created.reference}
             </button>
-            <button type="button" className="button button--ghost" onClick={() => setCreated(undefined)}>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={() => setCreated(undefined)}
+            >
               Raise another
             </button>
           </div>
