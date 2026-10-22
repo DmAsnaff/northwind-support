@@ -14,6 +14,14 @@ public sealed class AgentRepository(SupportDbContext db) : IAgentRepository
             .Include(a => a.Specializations)
             .FirstOrDefaultAsync(a => a.Id == id, ct);
 
+    public Task<Agent?> GetByEmailAsync(string email, CancellationToken ct)
+    {
+        var normalized = email.Trim().ToLower();
+        return db.Set<Agent>()
+            .Include(a => a.Specializations)
+            .FirstOrDefaultAsync(a => a.Email.ToLower() == normalized, ct);
+    }
+
     /// <summary>
     /// Loads every agent with their specializations and their count of open tickets in two
     /// set-based queries (no N+1).
