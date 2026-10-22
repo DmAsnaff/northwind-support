@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using SupportDesk.Application;
 using SupportDesk.Infrastructure;
+using SupportDesk.Infrastructure.Data;
 using SupportDesk.Presentation.Authentication;
 using SupportDesk.Presentation.Extensions;
 using SupportDesk.Presentation.Filters;
@@ -54,8 +55,11 @@ if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+}
 
-    // Keeps a developer machine one command away from a working database.
+if (app.Environment.IsDevelopment() || app.Configuration.GetValue<bool>("Database:MigrateAndSeedOnStartup"))
+{
+    // Keeps a developer machine or container one command away from a working database.
     await app.MigrateAndSeedAsync();
 }
 
@@ -63,6 +67,16 @@ app.UseCors(FrontendCorsPolicy);
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.MapGet("/health", async (SupportDbContext db, CancellationToken cancellationToken) =>
+{
+    var canConnect = await db.Database.CanConnectAsync(cancellationToken);
+    return canConnect
+        ? Results.Ok(new { status = "Healthy", database = "Reachable" })
+        : Results.Json(
+            new { status = "Unhealthy", database = "Unreachable" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+}).AllowAnonymous();
 
 app.MapControllers();
 
