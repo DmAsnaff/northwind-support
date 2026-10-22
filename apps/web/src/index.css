@@ -432,6 +432,41 @@ textarea[aria-invalid='true'] {
   max-width: 640px;
 }
 
+.escalation-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.escalation-history__item {
+  border: 1px solid var(--colour-border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.escalation-history__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.escalation-history__changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  font-size: 0.88rem;
+  margin-bottom: 8px;
+}
+
+.escalation-history__reason {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
