@@ -173,6 +173,23 @@ export interface CustomerDetail {
   tickets: TicketListItem[];
 }
 
+export interface AuthenticatedUser {
+  id: number;
+  fullName: string;
+  email: string;
+}
+
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  expiresAtUtc: string;
+  user: AuthenticatedUser;
+}
+
 /** RFC 7807 problem document, which is how the API reports every failure. */
 export interface ProblemDetails {
   type?: string;

@@ -37,6 +37,9 @@ public sealed class Agent : AggregateRoot
     /// <summary>How many open tickets this agent is willing to hold at once.</summary>
     public int MaxOpenTickets { get; private set; }
 
+    /// <summary>Salted PBKDF2 password hash used to authenticate the agent.</summary>
+    public string? PasswordHash { get; private set; }
+
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>The ticket categories this agent is qualified for.</summary>
@@ -45,6 +48,13 @@ public sealed class Agent : AggregateRoot
     /// <summary>True when the agent holds a specialization for the given category.</summary>
     public bool HasSpecialization(int categoryId) =>
         _specializations.Any(s => s.CategoryId == categoryId);
+
+    /// <summary>Sets or rotates the agent's hashed password.</summary>
+    public void SetPasswordHash(string passwordHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(passwordHash);
+        PasswordHash = passwordHash;
+    }
 
     /// <summary>Records that the agent is qualified for a category. Adding one twice is a no-op.</summary>
     public void AddSpecialization(int categoryId)

@@ -76,6 +76,23 @@ a {
   font-weight: 600;
 }
 
+.app__user {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app__user-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.login-page {
+  max-width: 460px;
+  margin: 48px auto;
+}
+
 .app__main {
   max-width: 1200px;
   margin: 0 auto;

@@ -10,6 +10,8 @@ public interface IAgentRepository
 {
     Task<Agent?> GetByIdAsync(int id, CancellationToken ct);
 
+    Task<Agent?> GetByEmailAsync(string email, CancellationToken ct);
+
     /// <summary>
     /// Loads all agents (with their specializations) paired with their current open ticket counts.
     /// </summary>

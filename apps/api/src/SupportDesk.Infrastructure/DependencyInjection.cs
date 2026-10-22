@@ -37,6 +37,12 @@ public static class DependencyInjection
         services.AddSingleton(slaSettings);
         services.AddSingleton<SlaPolicy>();
 
+        var jwtSettings = BindJwtSettings(configuration);
+        services.AddSingleton(jwtSettings);
+        services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
+        services.AddSingleton<JwtTokenService>();
+        services.AddSingleton<ITokenService>(sp => sp.GetRequiredService<JwtTokenService>());
+
         services.AddScoped<ITicketRepository, TicketRepository>();
         services.AddScoped<IAgentRepository, AgentRepository>();
         services.AddScoped<ICustomerRepository, CustomerRepository>();
@@ -83,6 +89,39 @@ public static class DependencyInjection
             {
                 settings.BaseWindowHours[priority] = hours;
             }
+        }
+
+        return settings;
+    }
+
+    private static JwtSettings BindJwtSettings(IConfiguration configuration)
+    {
+        var settings = new JwtSettings();
+        var section = configuration.GetSection(JwtSettings.SectionName);
+        if (!section.Exists())
+        {
+            return settings;
+        }
+
+        if (!string.IsNullOrWhiteSpace(section["SigningKey"]))
+        {
+            settings.SigningKey = section["SigningKey"]!;
+        }
+
+        if (!string.IsNullOrWhiteSpace(section["Issuer"]))
+        {
+            settings.Issuer = section["Issuer"]!;
+        }
+
+        if (!string.IsNullOrWhiteSpace(section["Audience"]))
+        {
+            settings.Audience = section["Audience"]!;
+        }
+
+        if (int.TryParse(section["ExpiryMinutes"], CultureInfo.InvariantCulture, out var expiryMinutes)
+            && expiryMinutes > 0)
+        {
+            settings.ExpiryMinutes = expiryMinutes;
         }
 
         return settings;
