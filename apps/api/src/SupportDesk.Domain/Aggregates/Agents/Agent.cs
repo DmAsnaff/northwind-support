@@ -42,6 +42,10 @@ public sealed class Agent : AggregateRoot
     /// <summary>The ticket categories this agent is qualified for.</summary>
     public IReadOnlyCollection<AgentSpecialization> Specializations => _specializations;
 
+    /// <summary>True when the agent holds a specialization for the given category.</summary>
+    public bool HasSpecialization(int categoryId) =>
+        _specializations.Any(s => s.CategoryId == categoryId);
+
     /// <summary>Records that the agent is qualified for a category. Adding one twice is a no-op.</summary>
     public void AddSpecialization(int categoryId)
     {

@@ -113,6 +113,26 @@ public sealed class TicketQueriesTests : IDisposable
         Assert.Equal(2, result.TotalPages);
     }
 
+    [Fact]
+    public async Task GetPagedAsync_WhenFilteringBySlaStatus_FiltersInDatabaseAndComputesStatus()
+    {
+        var atRisk = await _sut.GetPagedAsync(
+            new TicketQuery { SlaStatus = SlaStatus.AtRisk },
+            CancellationToken.None);
+
+        var singleAtRisk = Assert.Single(atRisk.Items);
+        Assert.Equal("TCK-0001", singleAtRisk.Reference);
+        Assert.Equal(SlaStatus.AtRisk, singleAtRisk.SlaStatus);
+
+        var breached = await _sut.GetPagedAsync(
+            new TicketQuery { SlaStatus = SlaStatus.Breached },
+            CancellationToken.None);
+
+        var singleBreached = Assert.Single(breached.Items);
+        Assert.Equal("TCK-0004", singleBreached.Reference);
+        Assert.Equal(SlaStatus.Breached, singleBreached.SlaStatus);
+    }
+
     private void SeedTestData()
     {
         var now = FixedClock.DefaultNow;
@@ -130,17 +150,26 @@ public sealed class TicketQueriesTests : IDisposable
         _db.AddRange(alex, sara);
         _db.SaveChanges();
 
-        var t1 = Ticket.Raise("TCK-0001", "Login outage", "Cannot sign in.", contoso.Id, general.Id, TicketPriority.Critical, now);
+        // Premium Critical window = 2h, 25% threshold = 30m -> due in 15m is AtRisk
+        var t1 = Ticket.Raise(
+            "TCK-0001", "Login outage", "Cannot sign in.", contoso.Id, general.Id,
+            TicketPriority.Critical, now, dueAtUtc: now.AddMinutes(15));
 
-        var t2 = Ticket.Raise("TCK-0002", "Invoice total mismatch", "Wrong VAT.", fabrikam.Id, billing.Id, TicketPriority.High, now.AddMinutes(5));
-        t2.AssignTo(alex.Id, now.AddMinutes(5));
+        // Standard High window = 8h, 25% threshold = 2h -> due in 6h is WithinSla
+        var t2 = Ticket.Raise(
+            "TCK-0002", "Invoice total mismatch", "Wrong VAT.", fabrikam.Id, billing.Id,
+            TicketPriority.High, now.AddMinutes(5), dueAtUtc: now.AddHours(6), assignedAgentId: alex.Id);
         t2.ChangeStatus(TicketStatus.InProgress, now.AddMinutes(5));
 
-        var t3 = Ticket.Raise("TCK-0003", "Refund request", "Duplicate charge.", fabrikam.Id, billing.Id, TicketPriority.Low, now.AddMinutes(10));
-        t3.AssignTo(sara.Id, now.AddMinutes(10));
+        var t3 = Ticket.Raise(
+            "TCK-0003", "Refund request", "Duplicate charge.", fabrikam.Id, billing.Id,
+            TicketPriority.Low, now.AddMinutes(10), assignedAgentId: sara.Id);
         t3.ChangeStatus(TicketStatus.Open, now.AddMinutes(10));
 
-        var t4 = Ticket.Raise("TCK-0004", "Production breach", "Keys exposed.", contoso.Id, general.Id, TicketPriority.Critical, now.AddMinutes(15));
+        // Past due -> Breached
+        var t4 = Ticket.Raise(
+            "TCK-0004", "Production breach", "Keys exposed.", contoso.Id, general.Id,
+            TicketPriority.Critical, now.AddMinutes(15), dueAtUtc: now.AddMinutes(-10));
 
         _db.AddRange(t1, t2, t3, t4);
         _db.SaveChanges();

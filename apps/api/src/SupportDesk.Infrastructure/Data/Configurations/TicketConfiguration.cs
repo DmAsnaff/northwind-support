@@ -57,7 +57,16 @@ public sealed class TicketConfiguration : IEntityTypeConfiguration<Ticket>
             .HasForeignKey(t => t.AssignedAgentId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        builder.HasMany(t => t.Escalations)
+            .WithOne()
+            .HasForeignKey(e => e.TicketId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.Navigation(t => t.Escalations)
+            .UsePropertyAccessMode(PropertyAccessMode.Field);
+
         builder.Ignore(t => t.IsOpen);
+        builder.Ignore(t => t.CanEscalate);
 
         builder.HasIndex(t => t.Reference).IsUnique().HasDatabaseName("UQ_Tickets_Reference");
 
