@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Spinner } from '../../components/Spinner';
 import { useReferenceData } from '../../hooks/useReferenceData';
+import { useOptionalAuth } from '../auth/authContext';
 import { AssignAgentControl } from './components/AssignAgentControl';
 import { EscalationHistory } from './components/EscalationHistory';
 import { EscalationPanel } from './components/EscalationPanel';
@@ -17,6 +18,7 @@ export function TicketDetailPage() {
   const { data: ticket, isLoading, error, reload, setData } = useTicket(ticketId);
   const escalations = useTicketEscalations(ticketId);
   const reference = useReferenceData();
+  const auth = useOptionalAuth();
 
   if (Number.isNaN(ticketId)) {
     return <ErrorMessage message="That is not a valid ticket reference." />;
@@ -58,6 +60,7 @@ export function TicketDetailPage() {
 
           <EscalationPanel
             ticket={ticket}
+            actorName={auth?.user?.fullName}
             onEscalated={(response) => {
               setData(response.ticket);
               escalations.setData([response.escalation, ...(escalations.data ?? [])]);
