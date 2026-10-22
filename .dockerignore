@@ -1,0 +1,25 @@
+# Build outputs and caches
+**/bin/
+**/obj/
+**/out/
+**/TestResults/
+
+# Node / frontend workspace
+**/node_modules/
+apps/web/
+
+# Git and IDE metadata
+.git/
+.gitignore
+.vs/
+.vscode/
+.idea/
+
+# Local environment and development secrets (never bake into image)
+.env
+.env.*
+**/appsettings.Development.json
+
+# Documentation
+*.md
+
